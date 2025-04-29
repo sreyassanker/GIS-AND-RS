@@ -1,0 +1,67 @@
+// Load Rainfall dataset
+var col = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+                                  .select('precipitation'); // Select precipitation band
+
+// Define a mask to clip the rainfall data by.
+// Define clipping and region boundary geometries
+var mask = ee.FeatureCollection('projects/gee-trial2/assets/IND_Shapefiles/IND');
+Map.centerObject(mask, 7);
+
+// Define the regional bounds of animation frames.
+var region = ee.Geometry.Polygon(
+  [[[68.0, 37.0],  // Top-left corner (northwest)
+    [68.0, 6.0],   // Bottom-left corner (southwest)
+    [97.5, 6.0],   // Bottom-right corner (southeast)
+    [97.5, 37.0]]], // Top-right corner (northeast)
+  null, false
+);
+
+// Define the time range for the interval
+var startDate = ee.Date('2022-01-01');
+var endDate = ee.Date('2023-01-01');
+var interval = 16; // 16-day interval
+
+// Generate a sequence of start dates for each 16-day interval
+var dateArray = ee.List.sequence(startDate.millis(), endDate.millis(), interval * 24 * 60 * 60 * 1000);
+
+// Function to create 16-day composites
+var create16DayComposite = function(startMillis) {
+  var start = ee.Date(startMillis);
+  var end = start.advance(interval, 'day');
+  var composite = col.filterDate(start, end).median(); // Median composite for each interval
+  return composite.set('system:time_start', start.millis());
+};
+
+// Create 16-day composites
+var comp = ee.ImageCollection(dateArray.map(create16DayComposite));
+
+// Make visualization images
+// Define visualization parameters for Rainfall.
+var visParams = {
+  min: 0, // Minimum precipitation (mm/day)
+  max: 50, // Maximum precipitation (mm/day)
+  palette: [
+    'FFFFFF', 'C8E1FF', 'A2D2FF', '73C6FF', '47B9FF', '299EFF', '1682FF',
+    '115ACF', '0B47A8', '08338B', '041F66'
+  ],
+};
+
+// Create visualization images for use as animation frames.
+var rgbVis = comp.map(function(img) {
+  return img.visualize(visParams).clip(mask);
+});
+
+// Create an animated GIF
+// Define GIF visualization parameters.
+var gifParams = {
+  'region': region,
+  'dimensions': 600,
+  'crs': 'EPSG:3857',
+  'framesPerSecond': 10
+};
+
+// Print the GIF URL to the console.
+print(rgbVis.getVideoThumbURL(gifParams));
+
+// Render the GIF animation in the console.
+print(ui.Thumbnail(rgbVis, gifParams));
