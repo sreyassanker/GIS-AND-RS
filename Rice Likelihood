@@ -1,0 +1,126 @@
+// Import the Madurai district boundary from the GAUL dataset
+var maduraiDistrict = ee.FeatureCollection("FAO/GAUL/2015/level2")                                  
+                         .filter(ee.Filter.eq('ADM2_NAME', 'Madurai'))
+                         .filter(ee.Filter.eq('ADM1_NAME', 'Tamil Nadu'));
+
+// Load Sentinel-1 Image Collection                                                                           
+var sentinel1 = ee.ImageCollection('COPERNICUS/S1_GRD')
+                 .filterBounds(maduraiDistrict)
+                 .filterDate('2023-01-01', '2023-12-31')
+                 .filter(ee.Filter.eq('instrumentMode', 'IW'))
+                 .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+                 .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+                 .filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING'));
+
+// Calculate mean VV and VH bands over time
+var meanVVVH = sentinel1.select(['VV', 'VH']).mean().clip(maduraiDistrict);
+Map.addLayer(meanVVVH, {bands: ['VV'], min: -25, max: 0}, 'Mean VV');
+
+// Define 6 classes, with Class 0 for Water and 5 classes for paddy likelihood             
+var riceClasses = meanVVVH.expression(
+  '(VV < -24 && VH < -28) ? 0 : ' +         // Class 0: Water
+  '(VV < -22 && VH < -28) ? 5 : ' +         // Class 5: High likelihood of paddy
+  '(VV < -20 && VH < -26) ? 4 : ' +         // Class 4: Moderately high likelihood
+  '(VV < -18 && VH < -24) ? 3 : ' +         // Class 3: Medium likelihood
+  '(VV < -16 && VH < -22) ? 2 : ' +         // Class 2: Low likelihood
+  '1', {                                    // Class 1: Very low likelihood (non-paddy)
+    'VV': meanVVVH.select('VV'),                                                                                                                  
+    'VH': meanVVVH.select('VH')
+  }
+);
+
+// Define color palette with blue for water and green-yellow for paddy classes
+var palette = ['#0000FF', '#006400', '#32CD32', '#ADFF2F', '#FFFF00', '#FFD700'];
+
+// Add classified paddy layer to map
+Map.addLayer(riceClasses.updateMask(riceClasses.gt(1)), {min: 2, max: 5, palette: palette.slice(1)}, 'Paddy Classes in Madurai');
+Map.addLayer(riceClasses.updateMask(riceClasses.eq(0)), {palette: ['#0000FF']}, 'Water');
+
+// Center the map on Madurai                                              
+Map.centerObject(maduraiDistrict, 9);
+Map.setOptions('SATELLITE');
+
+// Calculate area in square meters for each class within Madurai district                                               
+var areaImage = riceClasses.eq(0).multiply(ee.Image.pixelArea()).rename('water_area')                             
+  .addBands(riceClasses.eq(5).multiply(ee.Image.pixelArea()).rename('high_paddy_area'))
+  .addBands(riceClasses.eq(4).multiply(ee.Image.pixelArea()).rename('moderate_high_paddy_area'))
+  .addBands(riceClasses.eq(3).multiply(ee.Image.pixelArea()).rename('medium_paddy_area'))
+  .addBands(riceClasses.eq(2).multiply(ee.Image.pixelArea()).rename('low_paddy_area'))
+  .addBands(riceClasses.eq(1).multiply(ee.Image.pixelArea()).rename('very_low_paddy_area'));
+
+// Calculate total area for each class by region reduction                                  
+var areas = areaImage.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: maduraiDistrict,
+  scale: 10, // Scale in meters (Sentinel-1 resolution)
+  maxPixels: 1e9
+});
+
+// Display area calculations in hectares
+areas.evaluate(function(result) {
+  print('Area in hectares:');
+  print('Water:', result.water_area / 1e4);
+  print('High likelihood of paddy (Class 5):', result.high_paddy_area / 1e4);
+  print('Moderately high likelihood (Class 4):', result.moderate_high_paddy_area / 1e4);
+  print('Medium likelihood (Class 3):', result.medium_paddy_area / 1e4);
+  print('Low likelihood (Class 2):', result.low_paddy_area / 1e4);
+  print('Very low likelihood / Non-paddy (Class 1):', result.very_low_paddy_area / 1e4);
+});
+
+// Create a map title
+var title = ui.Label({
+  value: 'Rice/Paddy Classification - Madurai District',
+  style: {
+    fontSize: '24px',
+    fontWeight: 'bold',
+    textAlign: 'center',
+    stretch: 'horizontal',
+    margin: '10px'
+  }
+});
+Map.add(title);
+
+// Create a legend panel
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-left',
+    padding: '8px 15px'
+  }
+});
+
+// Legend title
+var legendTitle = ui.Label({
+  value: 'Rice/Paddy Classification Legend',
+  style: {fontWeight: 'bold', fontSize: '16px', margin: '0 0 8px 0'}
+});
+legend.add(legendTitle);
+
+// Function to create legend row
+function makeLegendRow(color, name) {
+  var colorBox = ui.Label({
+    style: {
+      backgroundColor: color,
+      padding: '8px',
+      margin: '0 0 4px 0'
+    }
+  });
+  var description = ui.Label({
+    value: name,
+    style: {margin: '0 0 4px 6px'}
+  });
+  return ui.Panel({
+    widgets: [colorBox, description],
+    layout: ui.Panel.Layout.Flow('horizontal')
+  });
+}
+
+// Add legend rows
+legend.add(makeLegendRow('#0000FF', 'Water (Class 0)'));
+legend.add(makeLegendRow('#FFD700', 'High likelihood of paddy (Class 5)'));
+legend.add(makeLegendRow('#FFFF00', 'Moderately high likelihood (Class 4)'));
+legend.add(makeLegendRow('#ADFF2F', 'Medium likelihood (Class 3)'));
+legend.add(makeLegendRow('#32CD32', 'Low likelihood (Class 2)'));
+legend.add(makeLegendRow('#006400', 'Very low likelihood (Class 1 - Non-paddy)'));
+
+// Add the legend to the map
+Map.add(legend);
