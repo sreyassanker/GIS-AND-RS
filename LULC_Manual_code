@@ -1,0 +1,81 @@
+Map.centerObject(roi, 12);
+
+// 1️⃣ Sentinel-2 Composite
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR')
+  .filterBounds(roi)
+  .filterDate('2024-01-01', '2024-12-31')
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10))
+  .select(['B2','B3','B4','B8','B11','B12']);
+
+var composite = s2.median().clip(roi);
+
+// Add NDVI & NDWI
+var ndvi = composite.normalizedDifference(['B8','B4']).rename('NDVI');
+var ndwi = composite.normalizedDifference(['B3','B11']).rename('NDWI');
+var image = composite.addBands([ndvi, ndwi]);
+
+Map.addLayer(composite, {bands:['B4','B3','B2'], min:0, max:3000}, 'True Color');
+
+// 2️⃣ Training Polygons
+// 2️⃣ Training Polygons
+var water_fc = ee.FeatureCollection(water).map(function(f){ return f.set('class', 0); });
+var builtup_fc = ee.FeatureCollection(builtup).map(function(f){ return f.set('class', 1); });
+var denseveg_fc = ee.FeatureCollection(densevegetation).map(function(f){ return f.set('class', 2); });
+var barren_fc = ee.FeatureCollection(barrenland).map(function(f){ return f.set('class', 3); });
+var agri_fc = ee.FeatureCollection(agricultural_area).map(function(f){ return f.set('class', 4); });
+
+print('Water:', water_fc.size());
+print('Built-up:', builtup_fc.size());
+print('Dense Vegetation:', denseveg_fc.size());
+print('Barren Land:', barren_fc.size());
+print('Agriculture:', agri_fc.size());
+
+// Merge all samples
+var trainingSamples = water_fc.merge(builtup_fc)
+                              .merge(denseveg_fc)
+                              .merge(barren_fc)
+                              .merge(agri_fc);
+
+// 3️⃣ Train & Classify
+var inputBands = ['B2','B3','B4','B8','B11','B12','NDVI','NDWI'];
+
+var trainingData = image.sampleRegions({
+  collection: trainingSamples,
+  properties: ['class'],
+  scale: 10,
+  tileScale: 4
+});
+
+print('Training samples:', trainingData.size());
+
+var classifier = ee.Classifier.smileRandomForest(200).train({
+  features: trainingData,
+  classProperty: 'class',
+  inputProperties: inputBands
+});
+
+var classified = image.select(inputBands).classify(classifier);
+
+// 4️⃣ Visualization
+var palette = [
+  '0000FF', // 0 - Water
+  'FF0000', // 1 - Built-up
+  '006400', // 2 - Dense Vegetation
+  'C2B280', // 3 - Barren
+  '00FF00'  // 4 - Agriculture
+];
+
+Map.addLayer(classified, {min: 0, max: 4, palette: palette}, 'LULC Classified');
+
+// 5️⃣ Export
+Export.image.toDrive({
+  image: classified.toInt8(),
+  description: 'LULC_Classification_S2_2024',
+  folder: 'GEE_Exports',
+  region: roi,
+  scale: 10,
+  maxPixels: 1e13,
+  fileFormat: 'GeoTIFF'
+});
+
+print('Class codes → 0=Water, 1=Built-up, 2=Dense Vegetation, 3=Barren, 4=Agriculture');
